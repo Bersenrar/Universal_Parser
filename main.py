@@ -41,13 +41,24 @@ def find_contact_link(soup, base_url):
     links = soup.find_all('a')
 
     for link in links:
-        if 'contact' in link.get_text().lower() or 'contact' in link.get('href').lower():
-            contact_link = link.get('href')
+        link_text = link.get_text()
+        link_href = link.get('href')
+        try:
+            if link_text and 'contact' in link_text.lower():
+                contact_link = link_href
+            elif link_href and 'contact' in link_href.lower():
+                contact_link = link_href
+            else:
+                continue
+
             if not contact_link.startswith(('http://', 'https://')):
                 contact_link = urljoin(base_url, contact_link)
             else:
                 contact_link = contact_link.split('://', 1)[-1]
-            return contact_link
+                return contact_link
+        except Exception as e:
+            print("Something went wrong: ", e)
+    return None
 
 
 def parse_page(data, url):
@@ -69,13 +80,12 @@ def parse_page(data, url):
     phone_pattern = re.compile(r'(\+?\d{1,3}\s?-?\(?\d{2,3}\)?\s?-?\d{2,3}\s?-?\d{2,3}\s?-?\d{2,3})')
     phone_matches = phone_pattern.findall(data)
     if phone_matches:
-        contacts['phone'] = " ".join(phone_matches)
+        contacts['phone'] = " ".join(phone_matches[:3])
 
     email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
     email_matches = email_pattern.findall(data)
     if email_matches:
-        contacts['email'] = " ".join(email_matches)
-
+        contacts['email'] = email_matches[0]
     skype_pattern = re.compile(r'skype:[\w\.-]+')
     skype_matches = skype_pattern.findall(data)
     if skype_matches:
@@ -96,7 +106,7 @@ def parse_page(data, url):
     return contacts
 
 
-def get_urls():
+def get_urls(table_name):
     '''
     Parse all urls without duplicates from excel file
     :return:
@@ -113,23 +123,31 @@ def get_urls():
     return urls_result
 
 
-def process_page(url, f):
+def process_page(url, df: pd.DataFrame, location, keyword):
     '''
     Receive page text then parsing it and append into result file
     :param url:
-    :param f:
+    :param df:
+    :param location:
+    :param keyword:
     :return:
     '''
     data = get_page(url)
+    # new_row = pd.DataFrame(index=[0])
     if not data:
-        append_string = f"Website: {url} DOESN'T RESPOND\n"
+        return df
     else:
         data = parse_page(data, url)
-        append_string = f"Website: {url} "
-        for key, value in data.items():
-            append_string = append_string + f"{key}: {value} "
-        append_string = append_string + "\n"
-    f.write(append_string.encode("utf-8"))
+    #     for key, value in data.items():
+    #         new_row.loc[0, key] = value
+    # new_row.loc[0, 'website'] = url
+    # print(new_row)
+    data["website"] = url
+    data["location"] = location
+    data["keyword"] = keyword
+    df.loc[len(df.index)] = data
+    print(data)
+    return df
 
 
 def main():
@@ -138,30 +156,18 @@ def main():
     Receive all urls from the excel file and start process each url using threads for time saving
     :return:
     '''
-    check = []
-    urls = list(get_urls())
-    process_per_iter = 10
+    urls = list(get_urls(""))
+    # process_per_iter = 10
     sites_range = len(urls)
+    existing_table = pd.read_excel("USA Services.xlsx")
     try:
-        f = open("result.csv", "ab+")
-        for i in range(0, sites_range, process_per_iter):
-            threads_list = []
-            for j in range(process_per_iter):
-                thread = threading.Thread(
-                    target=process_page,
-                    args=(urls[i + j], f)
-                )
-                check.append(i+j)
-                thread.start()
-                threads_list.append(thread)
-            for t in threads_list:
-                t.join(timeout=15)
+        for i in range(sites_range):
+            existing_table = process_page(urls[i], existing_table, "Florida", "Chiropractor")
     except Exception as e:
         print(f"Something went wrong in (main): {e}")
     finally:
-        if "f" in locals():
-            f.close()
-    print(check)
+        existing_table.to_excel("USA Services.xlsx", index=False)
+        print(existing_table)
 
 
 if __name__ == "__main__":
