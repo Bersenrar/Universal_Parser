@@ -1,7 +1,6 @@
 from bs4 import BeautifulSoup
 import requests
 import pandas as pd
-import threading
 import re
 from urllib.parse import urljoin
 
@@ -41,13 +40,88 @@ def find_contact_link(soup, base_url):
     links = soup.find_all('a')
 
     for link in links:
-        if 'contact' in link.get_text().lower() or 'contact' in link.get('href').lower():
-            contact_link = link.get('href')
+        link_text = link.get_text()
+        link_href = link.get('href')
+        try:
+            if link_text and 'contact' in link_text.lower():
+                contact_link = link_href
+            elif link_href and 'contact' in link_href.lower():
+                contact_link = link_href
+            else:
+                continue
+
             if not contact_link.startswith(('http://', 'https://')):
                 contact_link = urljoin(base_url, contact_link)
             else:
                 contact_link = contact_link.split('://', 1)[-1]
-            return contact_link
+                return contact_link
+        except Exception as e:
+            print("Something went wrong: ", e)
+    return None
+
+
+def email_getter(soup: BeautifulSoup, raw_data: str):
+    def get_emails_soup():
+        all_tags = soup.find_all(True)
+        email_list = set()
+        pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+        for t in all_tags:
+            res = re.findall(pattern, t.text)
+            for n in res:
+                email_list.add(n)
+        print(f"Emails from soup: {email_list}")
+        return email_list
+
+    def get_emails_raw():
+        email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+        email_matches = email_pattern.findall(raw_data)
+        print(f"Emails from data: {email_matches}")
+        return email_matches
+
+    result = list(set([*get_emails_raw(), *get_emails_soup()]))
+    print(f"Emails result search: {result}")
+    return result
+
+
+def get_numbers(soup: BeautifulSoup, raw_data: str):
+    def get_numbers_soup():
+        numbers = set()
+        all_tags = soup.find_all(True)
+        phone_pattern = re.compile(r'(\+?\d{1,3}\s?-?\(?\d{2,3}\)?\s?-?\d{2,3}\s?-?\d{2,3}\s?-?\d{2,3})')
+        for t in all_tags:
+            phone_matches = re.findall(phone_pattern, t.text)
+            for p_m in phone_matches:
+                numbers.add(p_m)
+        print(f"Phone numbers from soup: {numbers}")
+        return numbers
+
+    def get_numbers_row():
+        phone_pattern = re.compile(r'(\+?\d{1,3}\s?-?\(?\d{2,3}\)?\s?-?\d{2,3}\s?-?\d{2,3}\s?-?\d{2,3})')
+        phone_matches = phone_pattern.findall(raw_data)
+        print(f"Phone numbers from data: {phone_matches}")
+        return phone_matches
+
+    result = list(set([*get_numbers_row(), *get_numbers_soup()]))
+    print(f"Result phone numbers: {result}")
+    return result
+
+
+def get_social_networks(soup: BeautifulSoup):
+    social_networks = {}
+    social_links = soup.find_all('a', href=True)  # find all 'a' tags with href
+    for link in social_links:
+        href = link['href']
+        if 'facebook.com' in href:
+            social_networks['facebook'] = href
+        elif 'twitter.com' in href:
+            social_networks['twitter'] = href
+        elif 'instagram.com' in href:
+            social_networks['instagram'] = href
+        elif 'linkedin.com' in href:
+            social_networks['linkedin'] = href
+        elif 'skype:' in href:
+            social_networks['skype'] = href.split(':')[-1]
+    return social_networks
 
 
 def parse_page(data, url):
@@ -66,37 +140,30 @@ def parse_page(data, url):
         if new_data:
             soup = BeautifulSoup(new_data, "lxml")
 
-    phone_pattern = re.compile(r'(\+?\d{1,3}\s?-?\(?\d{2,3}\)?\s?-?\d{2,3}\s?-?\d{2,3}\s?-?\d{2,3})')
-    phone_matches = phone_pattern.findall(data)
+    phone_matches = get_numbers(soup, data)
     if phone_matches:
-        contacts['phone'] = " ".join(phone_matches)
+        contacts['phone'] = ", ".join(phone_matches[:3])
 
-    email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
-    email_matches = email_pattern.findall(data)
+    # email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+    email_matches = email_getter(soup, data)
     if email_matches:
-        contacts['email'] = " ".join(email_matches)
-
-    skype_pattern = re.compile(r'skype:[\w\.-]+')
-    skype_matches = skype_pattern.findall(data)
-    if skype_matches:
-        contacts['skype'] = skype_matches[0].split(':')[-1]
+        contacts['email'] = ", ".join(email_matches)
 
     address_tag = soup.find('address')
     if address_tag:
         contacts['address'] = address_tag.get_text()
 
-    social_links = soup.find_all('a', class_='social-link')
-    for link in social_links:
-        if 'facebook.com' in link['href']:
-            contacts['facebook'] = link['href']
-        elif 'twitter.com' in link['href']:
-            contacts['twitter'] = link['href']
-        elif 'instagram.com' in link['href']:
-            contacts['instagram'] = link['href']
+    # skype_pattern = re.compile(r'skype:[\w\.-]+')
+    # skype_matches = skype_pattern.findall(data)
+    # if skype_matches:
+    #     contacts['skype'] = skype_matches[0].split(':')[-1]
+
+    social_networks = get_social_networks(soup)
+    contacts.update(social_networks)
     return contacts
 
 
-def get_urls():
+def get_urls(table_name):
     '''
     Parse all urls without duplicates from excel file
     :return:
@@ -113,23 +180,31 @@ def get_urls():
     return urls_result
 
 
-def process_page(url, f):
+def process_page(url, df: pd.DataFrame, location, keyword):
     '''
     Receive page text then parsing it and append into result file
     :param url:
-    :param f:
+    :param df:
+    :param location:
+    :param keyword:
     :return:
     '''
     data = get_page(url)
+    # new_row = pd.DataFrame(index=[0])
     if not data:
-        append_string = f"Website: {url} DOESN'T RESPOND\n"
+        return df
     else:
         data = parse_page(data, url)
-        append_string = f"Website: {url} "
-        for key, value in data.items():
-            append_string = append_string + f"{key}: {value} "
-        append_string = append_string + "\n"
-    f.write(append_string.encode("utf-8"))
+    #     for key, value in data.items():
+    #         new_row.loc[0, key] = value
+    # new_row.loc[0, 'website'] = url
+    # print(new_row)
+    data["website"] = url
+    data["location"] = location
+    data["keyword"] = keyword
+    df.loc[len(df.index)] = data
+    print(data)
+    return df
 
 
 def main():
@@ -138,30 +213,18 @@ def main():
     Receive all urls from the excel file and start process each url using threads for time saving
     :return:
     '''
-    check = []
-    urls = list(get_urls())
-    process_per_iter = 10
+    urls = list(get_urls(""))
+    # process_per_iter = 10
     sites_range = len(urls)
+    existing_table = pd.read_excel("USA Services.xlsx")
     try:
-        f = open("result.csv", "ab+")
-        for i in range(0, sites_range, process_per_iter):
-            threads_list = []
-            for j in range(process_per_iter):
-                thread = threading.Thread(
-                    target=process_page,
-                    args=(urls[i + j], f)
-                )
-                check.append(i+j)
-                thread.start()
-                threads_list.append(thread)
-            for t in threads_list:
-                t.join(timeout=15)
+        for i in range(sites_range):
+            existing_table = process_page(urls[i], existing_table, "Florida", "Chiropractor")
     except Exception as e:
         print(f"Something went wrong in (main): {e}")
     finally:
-        if "f" in locals():
-            f.close()
-    print(check)
+        existing_table.to_excel("USA Services.xlsx", index=False)
+        print(existing_table)
 
 
 if __name__ == "__main__":
